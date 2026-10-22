@@ -72,7 +72,11 @@ TEST(MvuOptionsSentinel, EverySettingTheEmittersReadReachesTheCacheKey)
 		// What the emitters read is the EFFECTIVE selector, which follows the configured one
 		// through SyncToConfigured(), and only VU0's mVUtestCycles reads it.
 		{"Speedhacks.EECycleRate",    nullptr, [&] { sh.EECycleRate = static_cast<s8>(sh.EECycleRate + 1); EECycleRate::SyncToConfigured(); }, 1},
-		{"Speedhacks.EECycleSkip",    nullptr, [&] { sh.EECycleSkip = static_cast<u8>(sh.EECycleSkip + 1); }},
+		// BKFT: read only by the dispatcher's exit stub (regenerated every reset, loading the value at
+		// run time) and by C++ at run time (mVUcleanUp, mVUspinBounce, mVU0ArmParkedSpin). No program is
+		// emitted differently for it, so it must move neither sentinel: a profile switch (skip 0/1/2)
+		// would otherwise evict both VUs' whole program caches.
+		{"Speedhacks.EECycleSkip",    nullptr, [&] { sh.EECycleSkip = static_cast<u8>(sh.EECycleSkip + 1); }, 0},
 		// Reaches the emitters only as THREAD_VU1's other half.
 		{"Recompiler.EnableVU1",      [&] { sh.vuThread = true; }, [&] { rc.EnableVU1 = !rc.EnableVU1; }},
 		{"Recompiler.vu0Overflow",      nullptr, [&] { rc.vu0Overflow = !rc.vu0Overflow; }},
