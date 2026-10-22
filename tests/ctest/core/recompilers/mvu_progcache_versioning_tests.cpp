@@ -292,6 +292,66 @@ TEST(ProgCacheVersioning, optionsSentinel_mismatch_evicts_cache)
 	mVUProgCache::ResetForTest(1);
 }
 
+// BKFT: going back to options seen before (game A, game B, game A) takes A's evicted cache back, entries
+// and all, instead of rebuilding it from nothing.
+TEST(ProgCacheVersioning, switching_back_takes_the_earlier_cache_back)
+{
+	TempCacheRoot tmp;
+	mVUProgCache::ResetForTest(1);
+
+	XXH128_hash_t s_a{};
+	s_a.low64 = 0xAAAA0001ull; s_a.high64 = 0xAAAA0002ull;
+	XXH128_hash_t s_b{};
+	s_b.low64 = 0xBBBB0001ull; s_b.high64 = 0xBBBB0002ull;
+	XXH128_hash_t hash{};
+	hash.low64 = 0x0123456789ABCDEFull; hash.high64 = 0xFEDCBA9876543210ull;
+
+	mVUProgCache::InitWithSentinel(1, s_a);
+	ASSERT_TRUE(mVUProgCache::TestAppendIndexEntry(1, hash));
+	mVUProgCache::ResetForTest(1);
+
+	mVUProgCache::InitWithSentinel(1, s_b);
+	EXPECT_EQ(mVUProgCache::GetStats(1).entries, 0u);
+	EXPECT_EQ(mVUProgCache::GetStats(1).staleRestores, 0u);
+	mVUProgCache::ResetForTest(1);
+
+	mVUProgCache::InitWithSentinel(1, s_a);
+	const auto stats = mVUProgCache::GetStats(1);
+	EXPECT_EQ(stats.staleEvictions, 1u) << "B's cache goes aside";
+	EXPECT_EQ(stats.staleRestores, 1u) << "A's cache comes back";
+	EXPECT_EQ(stats.entries, 1u);
+	EXPECT_TRUE(mVUProgCache::TestHasIndexEntry(1, hash));
+
+	const auto bytes = FileSystem::ReadBinaryFile(Path::Combine(tmp.vu_subdir(1), "VERSION").c_str());
+	ASSERT_TRUE(bytes.has_value());
+	VersionHeaderMirror hdr;
+	std::memcpy(&hdr, bytes->data(), sizeof(hdr));
+	EXPECT_EQ(hdr.optionsSentinel.low64, s_a.low64);
+	EXPECT_EQ(hdr.optionsSentinel.high64, s_a.high64);
+
+	mVUProgCache::ResetForTest(1);
+}
+
+// BKFT: evicted caches no longer pile up: only the newest three stay on disk.
+TEST(ProgCacheVersioning, only_the_newest_evicted_caches_are_kept)
+{
+	TempCacheRoot tmp;
+	for (u64 i = 1; i <= 6; i++)
+	{
+		mVUProgCache::ResetForTest(1);
+		XXH128_hash_t s{};
+		s.low64 = 0x5000ull + i; s.high64 = 0x6000ull + i;
+		mVUProgCache::InitWithSentinel(1, s);
+	}
+
+	FileSystem::FindResultsArray stales;
+	FileSystem::FindFiles(Path::Combine(tmp.root(), "vu_jit").c_str(), "vu1.stale.*",
+		FILESYSTEM_FIND_FOLDERS | FILESYSTEM_FIND_HIDDEN_FILES, &stales);
+	EXPECT_EQ(stales.size(), 3u) << "six options sets, five evictions, three kept";
+
+	mVUProgCache::ResetForTest(1);
+}
+
 // 4. Poisoned VERSION on disk (wrong magic) triggers eviction. Same
 //    code path as (3), exercising the VersionMatches.magic check.
 TEST(ProgCacheVersioning, bad_magic_evicts_cache)

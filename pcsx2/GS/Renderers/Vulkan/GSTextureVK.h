@@ -146,4 +146,14 @@ private:
 	u32 m_buffer_size = 0;
 
 	bool m_needs_cache_invalidate = false;
+
+	// BKFT: when the readback buffer landed in memory the CPU does not cache (write-combined) on the
+	// Pi 5's V3D, Map() copies the bytes about to be read into this cached shadow in one sequential pass
+	// and m_map_pointer points at it, so the per-texel reads of the swizzle loops hit the CPU cache.
+	// m_vk_map_pointer is the real mapping; [m_shadow_lo, m_shadow_hi) is what the shadow holds of the
+	// last copy.
+	std::unique_ptr<u8[]> m_shadow;
+	const u8* m_vk_map_pointer = nullptr;
+	u32 m_shadow_lo = 0;
+	u32 m_shadow_hi = 0;
 };

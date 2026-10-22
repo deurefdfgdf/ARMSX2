@@ -3095,6 +3095,20 @@ void VMManager::ResetFrameLimiter()
 	s_limiter_frame_start = GetCPUTicks();
 }
 
+#if defined(__linux__) && !defined(__ANDROID__)
+// BKFT: how far before the limiter's deadline the sleep ends, in CPU ticks: BKFT_LIMITER_SPIN_US
+// microseconds, 200 by default; a negative value gives -1, the old whole-milliseconds sleep.
+static s64 BkftLimiterMarginTicks()
+{
+	static const s64 s_margin = [] {
+		const char* value = std::getenv("BKFT_LIMITER_SPIN_US");
+		const long long us = (value && value[0] != '\0') ? std::strtoll(value, nullptr, 10) : 200;
+		return (us < 0) ? s64(-1) : static_cast<s64>((static_cast<u64>(us) * GetTickFrequency()) / 1000000u);
+	}();
+	return s_margin;
+}
+#endif
+
 void VMManager::Internal::Throttle(bool vsync_start)
 {
 	if (s_target_speed == 0.0f || s_use_vsync_for_timing)
@@ -3146,16 +3160,30 @@ void VMManager::Internal::Throttle(bool vsync_start)
 		return;
 	}
 
-	// Conversion of delta from CPU ticks to milliseconds; a tick's time value is
-	// host-defined, so this has to divide by GetTickFrequency() rather than scale by a constant.
-	const s32 msec = static_cast<s32>((sDeltaTime * -1000) / static_cast<s64>(GetTickFrequency()));
-
-	// If any integer value of milliseconds exists, sleep it off.
-	// Prior comments suggested that 1-2 ms sleeps were inaccurate on some OSes;
-	// further testing suggests instead that this was utter bullshit.
-	if (msec > 1)
+#if defined(__linux__) && !defined(__ANDROID__)
+	// BKFT: sleep to just short of the deadline and spin only the last stretch. The whole-milliseconds-
+	// minus-one sleep below leaves up to ~2 ms of spinning at every call (vsync start and end, so twice a
+	// frame) once a game runs at full speed: no speed gained, only heat and power on the Pi 5. The margin
+	// covers the wake-up latency (BKFT_LIMITER_SPIN_US, default 200; negative = the old sleep, for A/B).
+	if (const s64 margin = BkftLimiterMarginTicks(); margin >= 0)
 	{
-		Threading::Sleep(msec - 1);
+		if (-sDeltaTime > margin)
+			Threading::SleepUntil(uExpectedEnd - static_cast<u64>(margin));
+	}
+	else
+#endif
+	{
+		// Conversion of delta from CPU ticks to milliseconds; a tick's time value is
+		// host-defined, so this has to divide by GetTickFrequency() rather than scale by a constant.
+		const s32 msec = static_cast<s32>((sDeltaTime * -1000) / static_cast<s64>(GetTickFrequency()));
+
+		// If any integer value of milliseconds exists, sleep it off.
+		// Prior comments suggested that 1-2 ms sleeps were inaccurate on some OSes;
+		// further testing suggests instead that this was utter bullshit.
+		if (msec > 1)
+		{
+			Threading::Sleep(msec - 1);
+		}
 	}
 
 	// Conversion to milliseconds loses some precision; after sleeping off whole milliseconds,

@@ -364,7 +364,11 @@ void mVUbuildOptionsSentinel(microVU& mVU)
 	// VU1 emitted before, so no kMvuCompilerAbiVersion bump is needed; existing
 	// on-disk VU1 caches built at a nonzero rate evict once and rebuild.
 	s.EECycleRate     = (mVU.index == 0) ? static_cast<s8>(EECycleRate::GetEffective()) : 0;
-	s.EECycleSkip     = static_cast<u8>(EmuConfig.Speedhacks.EECycleSkip);
+	// BKFT: no program is emitted differently for the EE cycle skip. The exit stub mVUdispatcherAB emits
+	// loads the value from EmuConfig at run time, and mVUcleanUp, mVUspinBounce and mVU0ArmParkedSpin read
+	// it live too. Baking it in made a profile switch (skip 0/1/2) evict the whole on-disk VU cache. The
+	// field stays (always 0), so caches built at skip 0 keep their identity.
+	s.EECycleSkip     = 0;
 	s.IbitHack        = EmuConfig.Gamefixes.IbitHack         ? 1 : 0;
 	s.VUSyncHack      = EmuConfig.Gamefixes.VUSyncHack       ? 1 : 0;
 	s.FullVU0SyncHack = EmuConfig.Gamefixes.FullVU0SyncHack  ? 1 : 0;

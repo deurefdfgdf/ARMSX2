@@ -17,6 +17,7 @@
 #include <chrono>
 #include <cinttypes>
 #include <condition_variable>
+#include <cstdlib>
 #include <deque>
 #include <filesystem>
 #include <functional>
@@ -101,6 +102,7 @@ struct State
 	u64 savesAttempted     = 0;
 	u64 savesWritten       = 0;
 	u64 staleEvictions     = 0;
+	u64 staleRestores      = 0; // BKFT: an evicted cache matching the live VERSION taken back
 	u64 dispatchProbes     = 0; // mVUsearchProg dispatch-time probes
 	u64 dispatchIndexAvail = 0; // subset where the hash is in the INDEX
 	u64 payloadWrites      = 0;
@@ -251,6 +253,69 @@ static void EvictStaleCache(State& s)
 		Console.WriteLn("mVUProgCache: evicted stale cache %s -> %s",
 		                s.root.c_str(), stale.c_str());
 		++s.staleEvictions;
+	}
+}
+
+// BKFT: one $root serves every game, so two games with different VU options (clamp modes, gamefixes,
+// the VU0 EE rate) used to evict each other on every switch, rebuild from nothing, and leave one more
+// $root.stale.<ns> on disk each time, for good. An eviction now first looks for an earlier cache whose
+// VERSION matches and takes it back, and only the newest kKeepStaleCaches evicted caches stay.
+static constexpr size_t kKeepStaleCaches = 3;
+
+// The <ns> of a "$root.stale.<ns>" path (0 if it has none).
+static u64 StaleStamp(const std::string& path)
+{
+	const std::string_view name = Path::GetFileName(path);
+	const size_t dot = name.rfind('.');
+	return (dot == std::string_view::npos) ? 0 : std::strtoull(std::string(name.substr(dot + 1)).c_str(), nullptr, 10);
+}
+
+// Every "$root.stale.<ns>" of this VU, newest first.
+static std::vector<std::string> ListStaleCaches(const State& s)
+{
+	const std::string parent(Path::GetDirectory(s.root));
+	const std::string pattern = std::string(Path::GetFileName(s.root)) + ".stale.*";
+	FileSystem::FindResultsArray found;
+	FileSystem::FindFiles(parent.c_str(), pattern.c_str(), FILESYSTEM_FIND_FOLDERS | FILESYSTEM_FIND_HIDDEN_FILES, &found);
+	std::vector<std::string> dirs;
+	for (const auto& f : found)
+		dirs.push_back(f.FileName);
+	std::sort(dirs.begin(), dirs.end(), [](const std::string& a, const std::string& b) { return StaleStamp(a) > StaleStamp(b); });
+	return dirs;
+}
+
+// Moves the newest evicted cache whose VERSION equals `live` back to $root. $root must be free.
+static bool RestoreMatchingStale(State& s, const VersionHeader& live)
+{
+	for (const std::string& dir : ListStaleCaches(s))
+	{
+		const auto vbytes = FileSystem::ReadBinaryFile(Path::Combine(dir, kVersionFileName).c_str());
+		if (!vbytes.has_value() || vbytes->size() != sizeof(VersionHeader))
+			continue;
+		VersionHeader disk;
+		std::memcpy(&disk, vbytes->data(), sizeof(disk));
+		if (!VersionMatches(disk, live))
+			continue;
+		if (std::rename(dir.c_str(), s.root.c_str()) != 0)
+			return false;
+		Console.WriteLn("mVUProgCache: took back %s as %s", dir.c_str(), s.root.c_str());
+		++s.staleRestores;
+		return true;
+	}
+	return false;
+}
+
+static std::filesystem::path Utf8Path(const std::string& path); // defined with the age-out code below
+
+static void PruneStaleCaches(const State& s)
+{
+	const std::vector<std::string> dirs = ListStaleCaches(s);
+	for (size_t i = kKeepStaleCaches; i < dirs.size(); i++)
+	{
+		std::error_code ec;
+		std::filesystem::remove_all(Utf8Path(dirs[i]), ec);
+		if (ec)
+			Console.Warning("mVUProgCache: cannot remove %s: %s", dirs[i].c_str(), ec.message().c_str());
 	}
 }
 
@@ -692,7 +757,11 @@ static void InitImpl(u32 vu_index, const XXH128_hash_t& options_sentinel)
 		// If it doesn't, this is a no-op and execution falls through to mkdir +
 		// WriteVersion below.
 		EvictStaleCache(s);
-		if (!FileSystem::EnsureDirectoryExists(s.root.c_str(), true, &error))
+		// BKFT: an earlier cache built under these very options (another game's, or this one's before a
+		// switch) comes back instead of a rebuild from nothing.
+		const bool restored = RestoreMatchingStale(s, live);
+		PruneStaleCaches(s);
+		if (!restored && !FileSystem::EnsureDirectoryExists(s.root.c_str(), true, &error))
 		{
 			Console.Warning("mVUProgCache[%u]: cannot create %s: %s — disabling",
 			                vu_index, s.root.c_str(),
@@ -701,7 +770,7 @@ static void InitImpl(u32 vu_index, const XXH128_hash_t& options_sentinel)
 			s.initialized = true;
 			return;
 		}
-		if (!WriteVersion(s.versionPath, live))
+		if (!restored && !WriteVersion(s.versionPath, live))
 		{
 			Console.Warning("mVUProgCache[%u]: write VERSION failed — disabling",
 			                vu_index);
@@ -1193,6 +1262,7 @@ Stats GetStats(u32 vu_index)
 	out.wouldBeHits        = s.wouldBeHits;
 	out.misses             = s.misses;
 	out.staleEvictions     = s.staleEvictions;
+	out.staleRestores      = s.staleRestores;
 	out.dispatchProbes     = s.dispatchProbes;
 	out.dispatchIndexAvail = s.dispatchIndexAvail;
 	out.payloadWrites      = s.payloadWrites;
@@ -1273,6 +1343,7 @@ void ResetForTest(u32 vu_index)
 	s.savesAttempted     = 0;
 	s.savesWritten       = 0;
 	s.staleEvictions     = 0;
+	s.staleRestores      = 0;
 	s.dispatchProbes     = 0;
 	s.dispatchIndexAvail = 0;
 	s.payloadWrites      = 0;

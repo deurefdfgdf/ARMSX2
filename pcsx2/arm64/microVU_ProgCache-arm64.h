@@ -219,6 +219,7 @@ namespace mVUProgCache
 		u64  wouldBeHits        = 0;
 		u64  misses             = 0;
 		u64  staleEvictions     = 0;
+		u64  staleRestores      = 0; // BKFT: evicted caches taken back on a VERSION match
 		u64  dispatchProbes     = 0;
 		u64  dispatchIndexAvail = 0;
 		u64  payloadWrites      = 0; // .vuprog files written (tmp+rename)

@@ -11,6 +11,17 @@
 #include "common/Console.h"
 #include "common/BitUtils.h"
 
+#include <algorithm>
+#include <cstdlib>
+#include <cstring>
+
+// BKFT: BKFT_READBACK_DIRECT=1 reads readbacks straight from uncached memory again (no shadow copy), for A/B.
+static bool BkftReadbackDirect()
+{
+	const char* value = std::getenv("BKFT_READBACK_DIRECT");
+	return value && value[0] != '\0' && !(value[0] == '0' && value[1] == '\0');
+}
+
 VkFramebuffer GSTextureVK::CreateNullFramebuffer(u32 w, u32 h)
 {
 	const VkRenderPass rp = GSDeviceVK::GetInstance()->GetRenderPass(
@@ -935,7 +946,27 @@ std::unique_ptr<GSDownloadTextureVK> GSDownloadTextureVK::Create(u32 width, u32 
 	tex->m_allocation = allocation;
 	tex->m_buffer = buffer;
 	tex->m_buffer_size = buffer_size;
-	tex->m_map_pointer = static_cast<const u8*>(ai.pMappedData);
+	tex->m_vk_map_pointer = static_cast<const u8*>(ai.pMappedData);
+	tex->m_map_pointer = tex->m_vk_map_pointer;
+
+	// BKFT: V3D without a host-cached type gets write-combined memory here. The swizzle loops read it one
+	// texel at a time, and every such read goes out to DRAM uncached; one sequential copy into cached
+	// memory (Map) is far cheaper. Broadcom only: Mali chose coherent memory on purpose and was measured.
+	VkMemoryPropertyFlags mem_flags = 0;
+	vmaGetAllocationMemoryProperties(GSDeviceVK::GetInstance()->GetAllocator(), allocation, &mem_flags);
+	if (!(mem_flags & VK_MEMORY_PROPERTY_HOST_CACHED_BIT) && GSDeviceVK::GetInstance()->IsDeviceBroadcom() &&
+		!BkftReadbackDirect())
+	{
+		static bool s_logged = false;
+		if (!s_logged)
+		{
+			s_logged = true;
+			Console.WriteLn("GS/VK: readback memory is not host-cached (flags 0x%x): reading through a cached copy",
+				static_cast<unsigned>(mem_flags));
+		}
+		tex->m_shadow.reset(new u8[buffer_size]);
+		tex->m_map_pointer = tex->m_shadow.get();
+	}
 	return tex;
 }
 
@@ -1005,6 +1036,7 @@ void GSDownloadTextureVK::DoCopyFromTexture(
 	m_copy_fence_counter = GSDeviceVK::GetInstance()->GetCurrentFenceCounter();
 	m_needs_cache_invalidate = true;
 	m_needs_flush = true;
+	m_shadow_lo = m_shadow_hi = 0; // the shadow holds nothing of this copy yet
 }
 
 bool GSDownloadTextureVK::Map(const GSVector4i& read_rc)
@@ -1019,6 +1051,25 @@ bool GSDownloadTextureVK::Map(const GSVector4i& read_rc)
 		vmaInvalidateAllocation(GSDeviceVK::GetInstance()->GetAllocator(), m_allocation, copy_offset,
 			GetTransferRegionSize(m_current_pitch, copy_row_bytes, copy_rows));
 		m_needs_cache_invalidate = false;
+	}
+
+	if (m_shadow)
+	{
+		// Copy what the caller is about to read, unless the shadow already holds it from this copy. A
+		// second, wider read of the same copy takes the whole span of both: never a gap marked as held.
+		u32 copy_offset, copy_row_bytes, copy_rows;
+		GetTransferSize(read_rc, &copy_offset, &copy_row_bytes, &copy_rows);
+		const u32 lo = std::min(copy_offset, m_buffer_size);
+		const u32 hi = std::min(copy_offset + GetTransferRegionSize(m_current_pitch, copy_row_bytes, copy_rows), m_buffer_size);
+		const bool held = (m_shadow_lo != m_shadow_hi) && lo >= m_shadow_lo && hi <= m_shadow_hi;
+		if (!held && hi > lo)
+		{
+			const u32 from = (m_shadow_lo == m_shadow_hi) ? lo : std::min(lo, m_shadow_lo);
+			const u32 to = (m_shadow_lo == m_shadow_hi) ? hi : std::max(hi, m_shadow_hi);
+			std::memcpy(m_shadow.get() + from, m_vk_map_pointer + from, to - from);
+			m_shadow_lo = from;
+			m_shadow_hi = to;
+		}
 	}
 
 	return true;
