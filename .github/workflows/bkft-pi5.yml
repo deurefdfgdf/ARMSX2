@@ -4,8 +4,9 @@
 #               compiler-flag measurements. Our code changes are runtime switches, so with
 #               BKFT_PIN_KEEP_CPU0=1 and no BKFT_V3D_* variables it behaves like upstream ARMSX2.
 #   pi5       — the console build: ARMv8.2 with the Pi 5's FP16, RCpc and dotprod, scheduled for the
-#               Cortex-A76, and without the recompiler test hooks (they sit in the JIT hot path). No
-#               crypto extension: BCM2712 lacks it, and code using it would crash there with SIGILL.
+#               Cortex-A76, and without the recompiler test hooks (they sit in the JIT hot path). The
+#               BCM2712 also has the Cryptographic Extension; it is left out of -march because the emulator
+#               gains nothing from it (LZMA's SHA-256 picks its hardware path at run time anyway).
 #               "-march=" in the flags also stops BuildParameters.cmake from adding its armv8.1-a default.
 #   pi5-tests — the same flags with the unit tests built and run, so the console build's compiler
 #               settings and our code changes are tested together.
@@ -59,24 +60,27 @@ jobs:
       buildAppImage: false
       runTests: true
 
-  # The CI runners are newer cores (ARMv9), so a binary that uses instructions the Pi 5 lacks would
-  # still pass the unit tests there. Disassemble the pi5 build and fail if any such instruction
-  # appears: ARMv8 crypto (absent on BCM2712), SVE/SVE2, and ARMv8.3+ instructions outside the
-  # hint space (hint-space ones like paciasp/autiasp execute as NOPs on the A76 and are allowed).
+  # The CI runners are newer cores (ARMv9), so a binary that uses instructions the Pi 5 lacks would still
+  # pass the unit tests there. Scan the pi5 build's machine code (encoding masks, every hit named by function)
+  # and fail on anything the BCM2712 cannot run. Its Cortex-A76 has ARMv8.2-A with FP16, RCpc, dotprod and
+  # the Cryptographic Extension; SHA512/SHA3/SM3/SM4, LRCPC2, JSCVT/FCMA, non-hint PAuth, BF16/I8MM, FHM,
+  # FlagM, FRINTTS, MTE and SVE/SME are errors. Hint-space PAC (NOPs on the A76) is fine.
   isa-audit:
     name: "BCM2712 instruction audit (pi5)"
     needs: pi5
     runs-on: ubuntu-24.04-arm
     steps:
+      - name: Checkout the scanner
+        uses: actions/checkout@v7
+        with:
+          sparse-checkout: .github/workflows/scripts/bkft
+
       - name: Download pi5 AppImage
         uses: actions/download-artifact@v8
         with:
-          pattern: bkft-pi5-*
+          pattern: bkft-pi5-linux-arm64-4k-appimage*
           path: art
           merge-multiple: true
-
-      - name: Install disassembler
-        run: sudo apt-get -o Acquire::ForceIPv4=true -y install llvm-17 > /dev/null
 
       - name: Scan for instructions the Cortex-A76 (BCM2712) does not have
         shell: bash
@@ -85,24 +89,9 @@ jobs:
           img=$(ls art/*.AppImage | head -1)
           chmod +x "$img"
           (cd art && "./$(basename "$img")" --appimage-extract > /dev/null)
-          # Our own code lives in the main executable; bundled Qt/SDL libraries are built generically.
+          # Our own code lives in the main executable; bundled Qt/SDL/crypto libraries pick CPU paths at run time.
           bin=$(find art/squashfs-root/usr/bin -maxdepth 1 -type f -executable -size +5M | head -1)
-          echo "Scanning: $bin ($(du -h "$bin" | cut -f1))"
-          llvm-objdump-17 -d --no-show-raw-insn --no-leading-addr "$bin" > disasm.txt
-          echo "Instructions: $(grep -c . disasm.txt)"
-          # crypto | SM3/SM4 | SHA3 | BF16/I8MM | v8.3 complex/JS/PAuth (non-hint) | v8.4 RCPC2/flagm | v8.5 frint/flagm2
-          bad='^\s*(aes[ed]|aesi?mc|pmull2?|sha1[cmhpsu0-9]*|sha256[hsu0-9]*|sha512[hsu0-9]*|sm3[a-z0-9]*|sm4e[a-z]*|eor3|bcax|rax1|xar|bfcvtn?2?|bfdot|bfmmla|bfmlal[bt]|[su]mmla|usmmla|usdot|sudot|fcmla|fcadd|fjcvtzs|ldraa|ldrab|braa|brab|blraa|blrab|retaa|retab|eretaa|eretab|ldapur[bhsw]*|stlur[bh]?|cfinv|axflag|xaflag|frint(32|64)[xz])\s'
-          if grep -E -i "$bad" disasm.txt | sort | uniq -c | sort -rn | head -40 | tee bad.txt | grep -q .; then
-            echo "::error::pi5 build contains instructions the Raspberry Pi 5 cannot execute (see list above)"
-            exit 1
-          fi
-          # SVE / SVE2 use z or p registers
-          if grep -E -q '\s(z[0-9]+\.[bhsdq]|p[0-9]+(/[mz])?)[,\s]' disasm.txt; then
-            grep -E '\s(z[0-9]+\.[bhsdq]|p[0-9]+(/[mz])?)[,\s]' disasm.txt | head -20
-            echo "::error::pi5 build contains SVE instructions"
-            exit 1
-          fi
-          echo "OK: no instructions outside the Cortex-A76 / BCM2712 feature set"
+          python3 -I .github/workflows/scripts/bkft/scan_a64.py "$bin" --fail
 
   pgo-generate:
     if: github.event_name == 'workflow_dispatch' && inputs.pgo_generate
