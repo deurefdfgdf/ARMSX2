@@ -310,6 +310,28 @@ TEST(IopThreadProcessorOrder, EqualCoresKeepTheirNumberOrder)
 	EXPECT_EQ(OrderProcessors(cpus), (ProcessorList{0, 1, 2, 3}));
 }
 
+// BKFT: Raspberry Pi 5, four identical Cortex-A76 cores. cpu 0 takes most interrupts, so it goes last.
+TEST(IopThreadProcessorOrder, BkftMovesTheBootCoreLastOnASymmetricQuadCore)
+{
+	using IopThread::MoveBootCoreLast;
+	const std::vector<CpuCapacity> pi5 = {
+		{0, 1024, true, 2400000000ull}, {1, 1024, true, 2400000000ull}, {2, 1024, true, 2400000000ull}, {3, 1024, true, 2400000000ull}};
+	EXPECT_EQ(MoveBootCoreLast(OrderProcessors(pi5), pi5), (ProcessorList{1, 2, 3, 0}));
+	EXPECT_EQ(MoveBootCoreLast(OrderProcessors(Rk3562()), Rk3562()), (ProcessorList{1, 2, 3, 0}));
+}
+
+TEST(IopThreadProcessorOrder, BkftLeavesHeterogeneousAndSmallCpusAlone)
+{
+	using IopThread::MoveBootCoreLast;
+	EXPECT_EQ(MoveBootCoreLast(OrderProcessors(Sd865()), Sd865()), (ProcessorList{7, 4, 5, 6, 0, 1, 2, 3}));
+	EXPECT_EQ(MoveBootCoreLast(OrderProcessors(Mq65()), Mq65()), (ProcessorList{4, 5, 6, 7, 0, 1, 2, 3}));
+	const std::vector<CpuCapacity> dual = {{0, 1024, true, 0}, {1, 1024, true, 0}};
+	EXPECT_EQ(MoveBootCoreLast(OrderProcessors(dual), dual), (ProcessorList{0, 1}));
+	// One core faster than the rest: the capacity ordering already decides, nothing is moved.
+	const std::vector<CpuCapacity> mixed = {{0, 1024, true, 0}, {1, 1024, true, 0}, {2, 1024, true, 0}, {3, 900, true, 0}};
+	EXPECT_EQ(MoveBootCoreLast(OrderProcessors(mixed), mixed), (ProcessorList{0, 1, 2, 3}));
+}
+
 TEST(IopThreadProcessorOrder, TheSecondThreadOfACoreIsLeftOut)
 {
 	std::vector<CpuCapacity> cpus = {{0, 1024, true, 0}, {1, 1024, false, 0}, {2, 1024, true, 0}, {3, 1024, false, 0}};

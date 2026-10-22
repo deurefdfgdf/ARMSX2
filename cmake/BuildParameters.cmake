@@ -166,6 +166,12 @@ elseif("${CMAKE_SYSTEM_PROCESSOR}" STREQUAL "arm64" OR "${CMAKE_SYSTEM_PROCESSOR
 		if(NOT CMAKE_CXX_FLAGS MATCHES "-march=")
 			add_compile_options("-march=armv8.1-a")
 		endif()
+		# BKFT: instruction scheduling for one specific core (e.g. cortex-a76 for the Raspberry Pi 5).
+		# -mtune changes no instruction set, so it is safe to combine with any -march above.
+		set(ARMSX2_ARM64_TUNE "" CACHE STRING "Linux arm64: core to tune for (-mtune), empty for the compiler default")
+		if(ARMSX2_ARM64_TUNE)
+			add_compile_options("-mtune=${ARMSX2_ARM64_TUNE}")
+		endif()
 	endif()
 
 	# If we're running on Linux, we need to detect the page/cache line size.

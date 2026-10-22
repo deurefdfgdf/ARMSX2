@@ -1,9 +1,14 @@
 # BKFT: ARMSX2 builds for the Raspberry Pi 5 console (Batocera 43, 4K-page kernel).
 #
-#   baseline — identical to upstream's "Linux arm64 (4k pages)" job: the reference for measurements.
-#   pi5      — same sources, compiled for the Pi 5 CPU (Cortex-A76, ARMv8.2: LSE atomics, dotprod,
-#              FP16, RCpc). BCM2712 has no ARMv8 crypto extension, hence "+nocrypto": without it the
-#              compiler may emit AES/SHA instructions that would crash on the Pi with SIGILL.
+#   baseline  — upstream's "Linux arm64 (4k pages)" build settings (ARMv8.1, tests on): the reference for
+#               compiler-flag measurements. Our code changes are runtime switches, so with
+#               BKFT_PIN_KEEP_CPU0=1 and no BKFT_V3D_* variables it behaves like upstream ARMSX2.
+#   pi5       — the console build: ARMv8.2 with the Pi 5's FP16, RCpc and dotprod, scheduled for the
+#               Cortex-A76, and without the recompiler test hooks (they sit in the JIT hot path). No
+#               crypto extension: BCM2712 lacks it, and code using it would crash there with SIGILL.
+#               "-march=" in the flags also stops BuildParameters.cmake from adding its armv8.1-a default.
+#   pi5-tests — the same flags with the unit tests built and run, so the console build's compiler
+#               settings and our code changes are tested together.
 #
 # Runs on every push to the bkft-pi5 branch and on demand (Actions → BKFT Pi 5 build → Run workflow).
 name: BKFT Pi 5 build
@@ -27,11 +32,22 @@ jobs:
   pi5:
     uses: ./.github/workflows/linux_build_qt.yml
     with:
-      jobName: "BKFT pi5 (Cortex-A76, 4k pages)"
+      jobName: "BKFT pi5 (ARMv8.2 + Cortex-A76 tuning, 4k pages)"
       artifactPrefixName: "bkft-pi5-linux-arm64-4k-appimage"
       compiler: clang
-      cmakeflags: "-DHOST_PAGE_SIZE=4096 -DHOST_CACHE_LINE_SIZE=64 -DCMAKE_C_FLAGS=-mcpu=cortex-a76+nocrypto -DCMAKE_CXX_FLAGS=-mcpu=cortex-a76+nocrypto"
+      cmakeflags: "-DHOST_PAGE_SIZE=4096 -DHOST_CACHE_LINE_SIZE=64 -DCMAKE_C_FLAGS=-march=armv8.2-a+fp16+rcpc+dotprod -DCMAKE_CXX_FLAGS=-march=armv8.2-a+fp16+rcpc+dotprod -DARMSX2_ARM64_TUNE=cortex-a76 -DENABLE_TESTS=OFF -DENABLE_RECOMPILER_TEST_HOOKS=OFF"
       buildAppImage: true
+      runTests: false
+
+  pi5-tests:
+    uses: ./.github/workflows/linux_build_qt.yml
+    with:
+      jobName: "BKFT pi5 flags + unit tests"
+      artifactPrefixName: "bkft-pi5-tests"
+      compiler: clang
+      cmakeflags: "-DHOST_PAGE_SIZE=4096 -DHOST_CACHE_LINE_SIZE=64 -DCMAKE_C_FLAGS=-march=armv8.2-a+fp16+rcpc+dotprod -DCMAKE_CXX_FLAGS=-march=armv8.2-a+fp16+rcpc+dotprod -DARMSX2_ARM64_TUNE=cortex-a76"
+      buildAppImage: false
+      runTests: true
 
   # The CI runners are newer cores (ARMv9), so a binary that uses instructions the Pi 5 lacks would
   # still pass the unit tests there. Disassemble the pi5 build and fail if any such instruction

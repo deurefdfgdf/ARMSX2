@@ -61,6 +61,12 @@ namespace IopThread
 	/// EE thread is pinned to cpu 0, a little core, with the GS and the VU1 thread on the other little ones.
 	std::vector<u32> OrderProcessors(const std::vector<CpuCapacity>& cpus);
 
+	/// BKFT (Raspberry Pi 5): on a symmetric CPU of four or more cores, where OrderProcessors keeps the plain number
+	/// order, moves processor 0 to the end so the EE thread is not pinned to it. On the Pi 5 cpu 0 services most
+	/// interrupts, so the busiest emulation thread goes on cpu 3 and cpu 0 is the one left to the system. Any order
+	/// with a faster tier (a capacity or frequency difference) is returned unchanged.
+	std::vector<u32> MoveBootCoreLast(std::vector<u32> order, const std::vector<CpuCapacity>& cpus);
+
 	// ---- the placement plans -------------------------------------------------------------------
 
 	/// Android's Performance Cores mode: every busy emulation thread is confined to the performance

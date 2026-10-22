@@ -49,6 +49,26 @@ std::vector<u32> IopThread::OrderProcessors(const std::vector<CpuCapacity>& cpus
 	return order;
 }
 
+std::vector<u32> IopThread::MoveBootCoreLast(std::vector<u32> order, const std::vector<CpuCapacity>& cpus)
+{
+	const CpuCapacity* first = nullptr;
+	u32 cores = 0;
+	for (const CpuCapacity& cpu : cpus)
+	{
+		if (!cpu.first_thread)
+			continue;
+		if (first && (cpu.capacity != first->capacity || cpu.frequency_hz != first->frequency_hz))
+			return order;
+		first = first ? first : &cpu;
+		cores++;
+	}
+	if (cores < 4 || order.empty() || order.front() != 0)
+		return order;
+	order.erase(order.begin());
+	order.push_back(0);
+	return order;
+}
+
 IopThread::HostCpuInfo IopThread::MakeHostInfo(bool is_arm64, u32 total_cores, u64 performance_mask)
 {
 	HostCpuInfo host;

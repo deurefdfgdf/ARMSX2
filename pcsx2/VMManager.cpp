@@ -4883,6 +4883,12 @@ static void InitializeProcessorList()
 			(proc->core ? static_cast<u64>(proc->core->frequency) : 0)});
 	}
 	s_processor_list = IopThread::OrderProcessors(cpus);
+#if defined(__linux__) && !defined(__ANDROID__) && (defined(_M_ARM64) || defined(__aarch64__))
+	// BKFT (Raspberry Pi 5): keep pinned emulation threads off cpu 0, which takes most interrupts there.
+	// BKFT_PIN_KEEP_CPU0=1 restores the plain number order.
+	if (!std::getenv("BKFT_PIN_KEEP_CPU0"))
+		s_processor_list = IopThread::MoveBootCoreLast(std::move(s_processor_list), cpus);
+#endif
 
 	SmallString str;
 	str.assign("Ordered processor list: ");

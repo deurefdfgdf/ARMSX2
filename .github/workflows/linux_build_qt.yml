@@ -43,6 +43,10 @@ on:
         required: false
         type: string
         default: Release
+      runTests:
+        required: false
+        type: boolean
+        default: true
 
 jobs:
   build_linux:
@@ -159,6 +163,7 @@ jobs:
           ccache -s
 
       - name: Run Tests
+        if: inputs.runTests == true
         working-directory: ./build
         run: ninja unittests
 

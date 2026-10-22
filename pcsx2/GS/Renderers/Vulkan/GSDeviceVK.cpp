@@ -83,6 +83,7 @@ namespace
 #include <bit>
 #include <chrono>
 #include <limits>
+#include <cstdlib>
 #include <mutex>
 #include <optional>
 #include <sstream>
@@ -91,6 +92,14 @@ namespace
 #ifdef __ANDROID__
 #include <android/hardware_buffer.h>
 #endif
+
+// BKFT (Raspberry Pi 5): opt-in V3D experiments, switched per game by environment variable so they can
+// be measured on the console without a rebuild. Any value other than empty or "0" turns one on.
+static bool BkftV3DExperiment(const char* name)
+{
+	const char* value = std::getenv(name);
+	return value && value[0] != '\0' && !(value[0] == '0' && value[1] == '\0');
+}
 
 // Tweakables
 enum : u32
@@ -1300,6 +1309,14 @@ void GSDeviceVK::ResolveDeviceIdentity(u32 max_push_descriptors)
 		driver_context);
 	m_device_rules =
 		GpuProfileDetector::ResolveVulkanDeviceRules(m_gpu_profile, driver_context, m_device_properties.deviceName);
+
+	// BKFT (Raspberry Pi 5): the self-read cost model was measured on Turnip and Honeykrisp only. V3D is a
+	// tiler too, but until it is measured there the rule is an opt-in experiment (BKFT_V3D_SELF_READ=1).
+	if (IsDeviceBroadcom() && BkftV3DExperiment("BKFT_V3D_SELF_READ"))
+	{
+		m_device_rules.self_read_costs_measured = true;
+		INFO_LOG("VK: BKFT_V3D_SELF_READ: treating V3D self-reads as measured");
+	}
 }
 
 bool GSDeviceVK::CreateAllocator()
@@ -4265,6 +4282,13 @@ void GSDeviceVK::ResolveFeatureTable()
 	// shader does not bit-match the fixed-function depth a later pass tests against, and a GEQUAL retest
 	// of the same geometry drops pixels along shared edges.
 	m_features.no_ps2_z_quantization = IsDeviceMali() || IsDeviceAppleGPU();
+	// BKFT (Raspberry Pi 5): V3D is a tiler like Mali, so skipping the depth write may bring early depth
+	// back there as well. Edge artifacts are possible, so it stays opt-in (BKFT_V3D_NO_ZQUANT=1).
+	if (IsDeviceBroadcom() && BkftV3DExperiment("BKFT_V3D_NO_ZQUANT"))
+	{
+		m_features.no_ps2_z_quantization = true;
+		INFO_LOG("VK: BKFT_V3D_NO_ZQUANT: PS2 Z quantization disabled on V3D");
+	}
 
 	const VkPhysicalDeviceLimits& limits = m_device_properties.limits;
 	// whether we can do point/line expand depends on the range of the device
