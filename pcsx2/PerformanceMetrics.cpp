@@ -4,6 +4,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <mutex>
 #include <utility>
 #include <vector>
@@ -54,6 +55,13 @@ static const float LOG_INTERVAL = 30.0f;
 static Common::Timer s_session_timer;
 static float s_log_accum_time = 0.0f;
 static u32 s_log_accum_frames = 0;
+
+// BKFT: BKFT_PERF_CSV=<path> appends one row per metrics window (UPDATE_INTERVAL) for the Pi benchmark
+// script. Slow frames are presents that took over 1.5 vsync intervals, i.e. visible stutter.
+static std::FILE* s_bkft_csv = nullptr;
+static bool s_bkft_csv_checked = false;
+static u32 s_bkft_slow_frames = 0;
+static float s_bkft_slow_frame_ms = 0.0f;
 
 // frame number, updated by the GS thread
 static u64 s_frame_number = 0;
@@ -317,6 +325,7 @@ void PerformanceMetrics::Reset()
 
 	s_accumulated_gpu_time = 0.0f;
 	s_presents_since_last_update = 0;
+	s_bkft_slow_frames = 0;
 
 	s_last_update_time.Reset();
 	s_last_frame_time.Reset();
@@ -332,11 +341,43 @@ void PerformanceMetrics::Reset()
 		stat.last_cpu_time = stat.handle.GetCPUTime();
 }
 
+static void BkftWritePerfRow()
+{
+	if (!s_bkft_csv_checked)
+	{
+		s_bkft_csv_checked = true;
+		const char* path = std::getenv("BKFT_PERF_CSV");
+		if (path && path[0] != '\0')
+		{
+			s_bkft_csv = std::fopen(path, "ab");
+			if (!s_bkft_csv)
+				Console.Warning("BKFT: cannot open the perf CSV '%s'", path);
+			else if (std::fseek(s_bkft_csv, 0, SEEK_END) == 0 && std::ftell(s_bkft_csv) == 0)
+				std::fputs("t,frames,vps,internal_fps,speed,ft_min,ft_avg,ft_max,slow_frames,ee,gs,gsb,vu,iop,gpu,gpu_ms\n", s_bkft_csv);
+		}
+	}
+
+	const float frame_rate = VMManager::GetFrameRate();
+	if (s_bkft_csv)
+	{
+		std::fprintf(s_bkft_csv, "%.2f,%u,%.2f,%.2f,%.1f,%.2f,%.2f,%.2f,%u,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.2f\n",
+			s_session_timer.GetTimeSeconds(), s_frames_since_last_update, s_fps, s_internal_fps,
+			frame_rate > 0.0f ? s_fps / frame_rate * 100.0f : 0.0f, s_minimum_frame_time, s_average_frame_time,
+			s_maximum_frame_time, s_bkft_slow_frames, s_cpu_thread_usage, s_gs_thread_usage, s_gs_back_thread_usage,
+			s_vu_thread_usage, s_iop_thread_usage, s_gpu_usage, s_average_gpu_time);
+		std::fflush(s_bkft_csv);
+	}
+	s_bkft_slow_frames = 0;
+	s_bkft_slow_frame_ms = frame_rate > 0.0f ? 1500.0f / frame_rate : 0.0f;
+}
+
 void PerformanceMetrics::Update(bool gs_register_write, bool fb_blit, bool is_skipping_present)
 {
 	if (!is_skipping_present)
 	{
 		const float frame_time = s_last_frame_time.GetTimeMillisecondsAndReset();
+		if (s_bkft_slow_frame_ms > 0.0f && frame_time > s_bkft_slow_frame_ms)
+			s_bkft_slow_frames++;
 		s_minimum_frame_time_accumulator = (s_minimum_frame_time_accumulator == 0.0f) ? frame_time : std::min(s_minimum_frame_time_accumulator, frame_time);
 		s_average_frame_time_accumulator += frame_time;
 		s_maximum_frame_time_accumulator = std::max(s_maximum_frame_time_accumulator, frame_time);
@@ -448,6 +489,8 @@ void PerformanceMetrics::Update(bool gs_register_write, bool fb_blit, bool is_sk
 		thread.usage = static_cast<double>(delta) * pct_divider;
 		thread.time = static_cast<double>(delta) * time_divider;
 	}
+
+	BkftWritePerfRow();
 
 	// Rolling perf log (uses this window's frame count before it resets).
 	s_log_accum_time += time;
