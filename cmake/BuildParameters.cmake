@@ -172,6 +172,19 @@ elseif("${CMAKE_SYSTEM_PROCESSOR}" STREQUAL "arm64" OR "${CMAKE_SYSTEM_PROCESSOR
 		if(ARMSX2_ARM64_TUNE)
 			add_compile_options("-mtune=${ARMSX2_ARM64_TUNE}")
 		endif()
+		# BKFT: profile-guided optimisation (clang). "generate" builds an instrumented binary that writes
+		# .profraw files where LLVM_PROFILE_FILE says; a .profdata path (merged from such runs on the
+		# target) optimises with it. A missing profile is an error rather than a silent plain build.
+		set(ARMSX2_PGO "" CACHE STRING "Linux arm64: empty, 'generate', or the path of a merged .profdata")
+		if(ARMSX2_PGO STREQUAL "generate")
+			add_compile_options("-fprofile-generate")
+			add_link_options("-fprofile-generate")
+		elseif(ARMSX2_PGO)
+			if(NOT EXISTS "${ARMSX2_PGO}")
+				message(FATAL_ERROR "ARMSX2_PGO: profile '${ARMSX2_PGO}' not found")
+			endif()
+			add_compile_options("-fprofile-use=${ARMSX2_PGO}" "-Wno-profile-instr-unprofiled" "-Wno-profile-instr-out-of-date")
+		endif()
 	endif()
 
 	# If we're running on Linux, we need to detect the page/cache line size.

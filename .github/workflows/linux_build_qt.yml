@@ -47,6 +47,12 @@ on:
         required: false
         type: boolean
         default: true
+      pgoProfiles:
+        # BKFT: folder of .profraw files collected on the target; when it has any, they are merged and
+        # the build is optimised with them (ARMSX2_PGO). Empty or no files: a plain build.
+        required: false
+        type: string
+        default: ""
 
 jobs:
   build_linux:
@@ -135,7 +141,13 @@ jobs:
       - name: Generate CMake
         env:
           ADDITIONAL_CMAKE_ARGS: ${{ inputs.cmakeflags }}
+          PGO_PROFILES: ${{ inputs.pgoProfiles }}
         run: |
+          if [ -n "$PGO_PROFILES" ] && compgen -G "$PGO_PROFILES/*.profraw" > /dev/null; then
+            llvm-profdata-17 merge -o "$PWD/armsx2.profdata" "$PGO_PROFILES"/*.profraw
+            echo "PGO: merged $(ls "$PGO_PROFILES"/*.profraw | wc -l) profile(s) from $PGO_PROFILES"
+            ADDITIONAL_CMAKE_ARGS="$ADDITIONAL_CMAKE_ARGS -DARMSX2_PGO=$PWD/armsx2.profdata"
+          fi
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE="${{ inputs.cmakeBuildType }}" \
             -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=${{ case(inputs.cmakeBuildType == 'Debug', 'OFF', 'ON') }} \

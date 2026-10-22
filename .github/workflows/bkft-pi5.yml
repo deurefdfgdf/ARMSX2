@@ -10,6 +10,10 @@
 #   pi5-tests — the same flags with the unit tests built and run, so the console build's compiler
 #               settings and our code changes are tested together.
 #
+# PGO: run the workflow by hand with "pgo_generate" ticked to get an instrumented pi5 build
+# (bkft-pgo-generate-*). Play it on the Pi with LLVM_PROFILE_FILE set (bench.sh: app=pgo+pgo), commit the
+# .profraw files to .github/bkft/pgo/, and from then on the pi5 job is optimised with them.
+#
 # Runs on every push to the bkft-pi5 branch and on demand (Actions → BKFT Pi 5 build → Run workflow).
 name: BKFT Pi 5 build
 
@@ -18,6 +22,11 @@ on:
     branches:
       - bkft-pi5
   workflow_dispatch:
+    inputs:
+      pgo_generate:
+        description: "Also build the instrumented pi5 binary for collecting a PGO profile on the Pi"
+        type: boolean
+        default: false
 
 jobs:
   baseline:
@@ -38,6 +47,7 @@ jobs:
       cmakeflags: "-DHOST_PAGE_SIZE=4096 -DHOST_CACHE_LINE_SIZE=64 -DCMAKE_C_FLAGS=-march=armv8.2-a+fp16+rcpc+dotprod -DCMAKE_CXX_FLAGS=-march=armv8.2-a+fp16+rcpc+dotprod -DARMSX2_ARM64_TUNE=cortex-a76 -DENABLE_TESTS=OFF -DENABLE_RECOMPILER_TEST_HOOKS=OFF"
       buildAppImage: true
       runTests: false
+      pgoProfiles: ".github/bkft/pgo"
 
   pi5-tests:
     uses: ./.github/workflows/linux_build_qt.yml
@@ -93,3 +103,44 @@ jobs:
             exit 1
           fi
           echo "OK: no instructions outside the Cortex-A76 / BCM2712 feature set"
+
+  pgo-generate:
+    if: github.event_name == 'workflow_dispatch' && inputs.pgo_generate
+    uses: ./.github/workflows/linux_build_qt.yml
+    with:
+      jobName: "BKFT pi5 PGO instrumented"
+      artifactPrefixName: "bkft-pgo-generate-linux-arm64-4k-appimage"
+      compiler: clang
+      cmakeflags: "-DHOST_PAGE_SIZE=4096 -DHOST_CACHE_LINE_SIZE=64 -DCMAKE_C_FLAGS=-march=armv8.2-a+fp16+rcpc+dotprod -DCMAKE_CXX_FLAGS=-march=armv8.2-a+fp16+rcpc+dotprod -DARMSX2_ARM64_TUNE=cortex-a76 -DENABLE_TESTS=OFF -DENABLE_RECOMPILER_TEST_HOOKS=OFF -DARMSX2_PGO=generate"
+      buildAppImage: true
+      runTests: false
+
+  # The instrumented build only helps if it writes a profile that llvm-profdata-17 (the merge step of the
+  # pi5 job) can read: start it once headless, let it exit normally and merge what it wrote.
+  pgo-smoke:
+    name: "PGO instrumented build writes a usable profile"
+    needs: pgo-generate
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Download instrumented AppImage
+        uses: actions/download-artifact@v8
+        with:
+          pattern: bkft-pgo-generate-*
+          path: art
+          merge-multiple: true
+
+      - name: Install llvm-profdata
+        run: sudo apt-get -o Acquire::ForceIPv4=true -y install llvm-17 > /dev/null
+
+      - name: Run once and merge the profile
+        shell: bash
+        run: |
+          set -euo pipefail
+          img=$(ls art/*.AppImage | head -1)
+          chmod +x "$img"
+          (cd art && "./$(basename "$img")" --appimage-extract > /dev/null)
+          export LLVM_PROFILE_FILE="$PWD/prof/armsx2-%m.profraw" QT_QPA_PLATFORM=offscreen
+          timeout 60 art/squashfs-root/usr/bin/armsx2-qt -help || true
+          ls -la prof
+          llvm-profdata-17 merge -o smoke.profdata prof/*.profraw
+          llvm-profdata-17 show smoke.profdata | tail -5
