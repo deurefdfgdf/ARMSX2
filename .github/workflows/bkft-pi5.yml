@@ -1,0 +1,34 @@
+# BKFT: ARMSX2 builds for the Raspberry Pi 5 console (Batocera 43, 4K-page kernel).
+#
+#   baseline — identical to upstream's "Linux arm64 (4k pages)" job: the reference for measurements.
+#   pi5      — same sources, compiled for the Pi 5 CPU (Cortex-A76, ARMv8.2: LSE atomics, dotprod,
+#              FP16, RCpc). BCM2712 has no ARMv8 crypto extension, hence "+nocrypto": without it the
+#              compiler may emit AES/SHA instructions that would crash on the Pi with SIGILL.
+#
+# Runs on every push to the bkft-pi5 branch and on demand (Actions → BKFT Pi 5 build → Run workflow).
+name: BKFT Pi 5 build
+
+on:
+  push:
+    branches:
+      - bkft-pi5
+  workflow_dispatch:
+
+jobs:
+  baseline:
+    uses: ./.github/workflows/linux_build_qt.yml
+    with:
+      jobName: "BKFT baseline (Linux arm64, 4k pages)"
+      artifactPrefixName: "bkft-baseline-linux-arm64-4k-appimage"
+      compiler: clang
+      cmakeflags: "-DHOST_PAGE_SIZE=4096 -DHOST_CACHE_LINE_SIZE=64"
+      buildAppImage: true
+
+  pi5:
+    uses: ./.github/workflows/linux_build_qt.yml
+    with:
+      jobName: "BKFT pi5 (Cortex-A76, 4k pages)"
+      artifactPrefixName: "bkft-pi5-linux-arm64-4k-appimage"
+      compiler: clang
+      cmakeflags: "-DHOST_PAGE_SIZE=4096 -DHOST_CACHE_LINE_SIZE=64 -DCMAKE_C_FLAGS=-mcpu=cortex-a76+nocrypto -DCMAKE_CXX_FLAGS=-mcpu=cortex-a76+nocrypto"
+      buildAppImage: true
