@@ -63,8 +63,9 @@ namespace IopThread
 
 	/// BKFT (Raspberry Pi 5): on a symmetric CPU of four or more cores, where OrderProcessors keeps the plain number
 	/// order, moves processor 0 to the end so the EE thread is not pinned to it. On the Pi 5 cpu 0 services most
-	/// interrupts, so the busiest emulation thread goes on cpu 3 and cpu 0 is the one left to the system. Any order
-	/// with a faster tier (a capacity or frequency difference) is returned unchanged.
+	/// interrupts, so the order becomes 1, 2, 3, 0: EE on cpu 1, VU1 on cpu 2, GS on cpu 3. Cpu 0 is not left empty:
+	/// the GS back thread (when on) and the software renderer's workers are placed there. Any order with a faster
+	/// tier (a capacity or frequency difference) is returned unchanged.
 	std::vector<u32> MoveBootCoreLast(std::vector<u32> order, const std::vector<CpuCapacity>& cpus);
 
 	// ---- the placement plans -------------------------------------------------------------------

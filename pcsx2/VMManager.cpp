@@ -4912,9 +4912,10 @@ static void InitializeProcessorList()
 	}
 	s_processor_list = IopThread::OrderProcessors(cpus);
 #if defined(__linux__) && !defined(__ANDROID__) && (defined(_M_ARM64) || defined(__aarch64__))
-	// BKFT (Raspberry Pi 5): keep pinned emulation threads off cpu 0, which takes most interrupts there.
-	// BKFT_PIN_KEEP_CPU0=1 restores the plain number order.
-	if (!std::getenv("BKFT_PIN_KEEP_CPU0"))
+	// BKFT (Raspberry Pi 5): keep the EE, VU1 and GS threads off cpu 0, which takes most interrupts there.
+	// BKFT_PIN_KEEP_CPU0=1 restores the plain number order ("0" or empty means off, as for the other BKFT_* switches).
+	const char* keep_cpu0 = std::getenv("BKFT_PIN_KEEP_CPU0");
+	if (!keep_cpu0 || keep_cpu0[0] == '\0' || (keep_cpu0[0] == '0' && keep_cpu0[1] == '\0'))
 		s_processor_list = IopThread::MoveBootCoreLast(std::move(s_processor_list), cpus);
 #endif
 

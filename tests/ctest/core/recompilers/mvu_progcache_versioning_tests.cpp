@@ -352,6 +352,49 @@ TEST(ProgCacheVersioning, only_the_newest_evicted_caches_are_kept)
 	mVUProgCache::ResetForTest(1);
 }
 
+// BKFT: stamps keep growing across reboots. A cache evicted now must outlive older ones even when those
+// carry larger numbers (a steady-clock stamp from a long session, or a clock that ran ahead).
+TEST(ProgCacheVersioning, a_new_eviction_outlives_older_stamps)
+{
+	TempCacheRoot tmp;
+	const std::string jit = Path::Combine(tmp.root(), "vu_jit");
+	ASSERT_TRUE(FileSystem::EnsureDirectoryExists(jit.c_str(), true));
+	for (int i = 1; i <= 3; i++)
+	{
+		const std::string old = Path::Combine(jit, "vu1.stale.900000000000000000" + std::to_string(i));
+		ASSERT_TRUE(FileSystem::EnsureDirectoryExists(old.c_str(), false));
+	}
+
+	mVUProgCache::ResetForTest(1);
+	XXH128_hash_t s_a{};
+	s_a.low64 = 0x7001ull; s_a.high64 = 0x7002ull;
+	mVUProgCache::InitWithSentinel(1, s_a);
+	mVUProgCache::ResetForTest(1);
+	XXH128_hash_t s_b{};
+	s_b.low64 = 0x8001ull; s_b.high64 = 0x8002ull;
+	mVUProgCache::InitWithSentinel(1, s_b); // A's cache goes aside, and must get the newest stamp
+
+	FileSystem::FindResultsArray stales;
+	FileSystem::FindFiles(jit.c_str(), "vu1.stale.*", FILESYSTEM_FIND_FOLDERS | FILESYSTEM_FIND_HIDDEN_FILES, &stales);
+	EXPECT_EQ(stales.size(), 3u);
+	bool found_a = false;
+	for (const auto& f : stales)
+	{
+		const auto bytes = FileSystem::ReadBinaryFile(Path::Combine(f.FileName, "VERSION").c_str());
+		if (bytes.has_value() && bytes->size() == sizeof(VersionHeaderMirror))
+		{
+			VersionHeaderMirror hdr;
+			std::memcpy(&hdr, bytes->data(), sizeof(hdr));
+			found_a = found_a || (hdr.optionsSentinel.low64 == s_a.low64 && hdr.optionsSentinel.high64 == s_a.high64);
+		}
+	}
+	EXPECT_TRUE(found_a) << "the cache evicted just now was pruned";
+	EXPECT_FALSE(FileSystem::DirectoryExists(Path::Combine(jit, "vu1.stale.9000000000000000001").c_str()))
+		<< "the oldest one should be the one pruned";
+
+	mVUProgCache::ResetForTest(1);
+}
+
 // 4. Poisoned VERSION on disk (wrong magic) triggers eviction. Same
 //    code path as (3), exercising the VersionMatches.magic check.
 TEST(ProgCacheVersioning, bad_magic_evicts_cache)

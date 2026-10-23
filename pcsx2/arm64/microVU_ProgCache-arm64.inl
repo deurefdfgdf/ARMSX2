@@ -238,11 +238,26 @@ static bool WriteVersion(const std::string& path, const VersionHeader& hdr)
 	return std::rename(tmp.c_str(), path.c_str()) == 0;
 }
 
+static u64 StaleStamp(const std::string& path);
+static std::vector<std::string> ListStaleCaches(const State& s);
+
+// BKFT: the stamp is what orders evicted caches by age (RestoreMatchingStale, PruneStaleCaches), so it has
+// to keep growing across reboots: wall-clock nanoseconds (steady_clock restarts at boot), and never below
+// the newest stamp already on disk, since a Pi 5 without its RTC battery can boot with the clock behind.
+static u64 NextStaleStamp(const State& s)
+{
+	u64 stamp = static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+		std::chrono::system_clock::now().time_since_epoch()).count());
+	for (const std::string& dir : ListStaleCaches(s))
+		stamp = std::max(stamp, StaleStamp(dir) + 1);
+	return stamp;
+}
+
 static void EvictStaleCache(State& s)
 {
 	if (!FileSystem::DirectoryExists(s.root.c_str()))
 		return;
-	const std::string stale = s.root + ".stale." + std::to_string(NowNs());
+	const std::string stale = s.root + ".stale." + std::to_string(NextStaleStamp(s));
 	if (std::rename(s.root.c_str(), stale.c_str()) != 0)
 	{
 		Console.Warning("mVUProgCache: rename %s -> %s failed",
